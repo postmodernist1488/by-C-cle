@@ -12,17 +12,17 @@
 #include <ctype.h>
 #include <time.h>
 #include <assert.h>
+#include <sys/ioctl.h>
 
 #define sectomicro(sec) (int) ((sec) * 1000000)
 #define ETX 3
-#define MAX_INPUT 1000
 #define NUM_LINES_TO_RETURN "12"
 #define SLOWNESS_MIN 0.25
 #define SLOWNESS_MAX 1.00
 #define NANOSECS_TO_SLOWDOWN 500000000
-
-//log file for errors and debug information
-FILE *logfile;
+#define MAX_LINES_IN_TEXT 100
+#define MAX_CHARS_IN_LINE 100
+#define MAX_TEXTS 100
 
 struct termios orig_termios;
 
@@ -66,6 +66,11 @@ int getch(void) {
 /* move cursor LINES up */
 void move_up(int lines) {
     printf("\033[%dA\r", lines);
+}
+
+/* move cursor LINES down */
+void move_down(int lines) {
+    printf("\033[%dB\r", lines);
 }
 
 //used for atexit to return cursor where it is supposed to be after program finishes
@@ -149,29 +154,25 @@ void dec_slowness(double *slowness) {
         *slowness-=0.05;
 }
 
-//sample texts
-char *text1 = "This is a text. This is gameplay shit. This.";
-char *text2 = "Next text is nothing interesting, so okay...";
-char *text3 = "This is some text the user will type.";
 
 //get random int between from and to
 int randint(int from, int to) {
     return from + rand() % (to - from + 1);
 }
 
-//get next word in a line, return 1 if last word, write it to next_word
-int get_next_word(const char *line, char *next_word) {
+//get next word in a line, return true if last word, write it to whatever next_word points to
+bool get_next_word(const char *line, char *next_word) {
     static int line_pos;
     while(isspace(line[line_pos])) line_pos++;
+    if (line[line_pos] == '\0') {
+        line_pos = 0;
+        return false;
+    }
     while(!isspace(line[line_pos]) && line[line_pos] != '\0') {
         *next_word++ = line[line_pos++];
     }
     *next_word = '\0';
-    if (line[line_pos] == '\0') {
-        line_pos = 0;
-        return 1;
-    }
-    return 0;
+    return true;
     
 }
 
@@ -182,9 +183,79 @@ char *get_last_word(char *str, int pos) {
     return &str[pos + 1];
 }
 
-void get_next_line(char *line) {
-    (void) line;
-    assert(false && "get_next_line is not implemented");
+//TODO: dynamic allocation for lines in a text
+typedef struct {
+    char *lines[MAX_LINES_IN_TEXT];
+    int lines_number;
+} Text;
+
+
+//TODO: dynamic allocation for texts
+Text *texts[MAX_TEXTS];
+//push text on the text stack and return the number of texts
+int push_text(Text *text) {
+    static size_t text_sp;
+    if (text_sp < MAX_TEXTS)
+        texts[text_sp++] = text; 
+    else
+        fprintf(stderr, "Warning: texts limit reached");
+    return text_sp;
+}
+
+char *slurp_file(const char *filename);
+
+//create text structs from str and return the number of texts added
+int texts_from_string(char *str) {
+
+    int texts_number = 0;
+
+    size_t i = 0;
+    while (str[i]) {
+        Text *text = malloc(sizeof(Text));
+        if (text == NULL) {
+            fprintf(stderr, "Error: unable to allocate memory %d\n", texts_number);
+            exit(1);
+        }
+        text->lines_number = 0;
+        while (!(str[i] == '\n' && str[i + 1] == '\n') && str[i]) {
+            while (isspace(str[i])) i++;
+            if (str[i] == '\0') break;
+            char *line = malloc(MAX_CHARS_IN_LINE * sizeof(char));
+            if (line == NULL) {
+                fprintf(stderr, "Error: unable to allocate memory %d\n", texts_number);
+                exit(1);
+            }
+            int j = 0;
+
+            //TODO: smarter cutting of long lines
+            while(str[i] != '\n' && str[i] && j < MAX_CHARS_IN_LINE - 1) {
+                line[j++] = str[i++];
+            }
+            line[j] = '\0';
+            if (text->lines_number < MAX_LINES_IN_TEXT)
+                text->lines[text->lines_number++] = line;
+            else
+                fprintf(stderr, "Error: too many lines in text %d\n", texts_number);
+        }
+        while (isspace(str[i])) i++;
+        texts_number = push_text(text);
+    }
+
+    return texts_number;
+}
+
+
+char *get_next_line(int texts_number) {
+    assert(texts_number > 0);
+    static int lines_read;
+    static Text *text;
+    if (text == NULL || lines_read >= text->lines_number) {
+        //get new text
+        lines_read = 0;
+        int n = randint(0, texts_number - 1); 
+        text = texts[n];
+    }
+    return text->lines[lines_read++];
 }
 
 void trim_r_from_pos(char *str, int pos) {
@@ -193,6 +264,10 @@ void trim_r_from_pos(char *str, int pos) {
 }
 
 int main(void) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    //max input is the size of the terminal
+    int max_input = w.ws_col;
 
     //for asynchronous input
     set_conio_terminal_mode();
@@ -200,29 +275,40 @@ int main(void) {
     srand(time(NULL));
     //return cursor when exiting the program
     atexit(return_cursor);
-
+    //default file for texts
+    //TODO: get file from command line arguments
+    char *file = "texts.txt";
     bool quit = false;
-
-    //a file for possible errors
-    logfile = fopen("errors.log", "a");
-
+    //variable to hold time
+    struct timespec start, current;
     //user input string - conveniently zero initiatialized
-    char input_str[MAX_INPUT] = {0};
+    char input_str[max_input];
+    memset(input_str, 0, max_input);
+
     //pointer to last free character spot in the above string
     int input_str_p = 0;
 
     //instead of speed we have slowness modifier for sleep
     double slowness = 1;
-    //variable to hold time
-    struct timespec start, current;
 
-    char *textpointers[] = { text1, text2, text3 };
-    int num_texts = sizeof textpointers / sizeof(char *);
-    char *goal_string = textpointers[randint(0, num_texts - 1)];
-   
+    //read the file
+    char *str;
+    if ((str = slurp_file(file)) == NULL) {
+        return -1;
+    }
+    int texts_number = texts_from_string(str);
+    free(str);
+    if (texts_number == -1) {
+        fprintf(stderr, "Unable to open the texts file");
+        return 1;
+    }
+
+
+    char *goal_string = get_next_line(texts_number);
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    char next_word[MAX_INPUT] = {0};
+    char next_word[max_input];
+    memset(next_word, 0, max_input);
     get_next_word(goal_string, next_word);
     char *last_word = "";
     
@@ -236,20 +322,21 @@ int main(void) {
 
             print_background();
             move_up(3);
+            //TODO: don't overwrite blanks and display background behind the cyclist
             printf("%s\n\r", bycicle1);
             printf("%s\n\r", bycicle2);
             printf("%s\n\r", bycicle3);
             //debug line
-            //printf("[%.70s]\n\r%s\r\n----- Speed: %.1lf km/h --- next_word: %s --last word typed: %s------\n\r", goal_string, input_str, slowness_to_speed(slowness), next_word, last_word);
+            //printf("[%-*s]\n\r%s\r\n----- Speed: %.1lf km/h --- next_word: %s --last word typed: %s------\n\r", max_input - 2, goal_string, input_str, slowness_to_speed(slowness), next_word, last_word);
             printf("[%.70s]\n\r%s\r\n----- Speed: %.1lf km/h ---------------------------------------------\n\r", goal_string, input_str, slowness_to_speed(slowness));
             move_up(12);
 
             usleep(sectomicro(slowness * 0.05));
         }
-        char c = getch(); /* consume the character */
+        char c = getch();
         switch (c) {
             case -1:
-                fputs(strerror(errno), logfile);
+                fprintf(stderr, "read failed: %s\n", strerror(errno));
                 break;
             case ETX:
                 quit = true;
@@ -260,18 +347,88 @@ int main(void) {
                     input_str[--input_str_p] = ' ';
                 break;
             default:
-                if (isprint(c) && input_str_p < MAX_INPUT) {
+                if (isprint(c) && input_str_p < max_input) {
                 input_str[input_str_p++] = c;
                 }
                 trim_r_from_pos(input_str, input_str_p);
 
                 last_word = get_last_word(input_str, input_str_p);
                 if (strcmp(next_word, last_word) == 0) {
-                    if (get_next_word(goal_string, next_word))
-                        get_next_line(goal_string);
+                    if (!get_next_word(goal_string, next_word)) {
+                        //no more words in the current line
+                        goal_string = get_next_line(texts_number);
+                        memset((void *)input_str, 0, max_input);
+                        input_str_p = 0;
+                        //clear the stdout
+                        move_down(9);
+                        for (int i = 0; i < max_input; i++) putchar(' ');
+                        putchar('\n');
+                        putchar('\r');
+                        for (int i = 0; i < max_input; i++) putchar(' ');
+                        move_up(10);
+                        get_next_word(goal_string, next_word);
+                    }
                     dec_slowness(&slowness);
                 }
                 break;
         }
     }
+    return 0;
 }
+
+/*stolen from Tsoding and modified to NULL-terminate, though it's easy to understand this code
+ * it just mallocs the size of a file + 1 and puts the data into the allocated buffer
+ * + a null character
+ */
+char *slurp_file(const char *file_path)
+{
+    char *buffer = NULL;
+
+    FILE *f = fopen(file_path, "r");
+    if (f == NULL) {
+        goto error;
+    }
+
+    if (fseek(f, 0, SEEK_END) < 0) {
+        goto error;
+    }
+
+    long m = ftell(f);
+    if (m < 0) {
+        goto error;
+    }
+
+    buffer = malloc(sizeof(char) * m + 1);
+    if (buffer == NULL) {
+        goto error;
+    }
+
+    if (fseek(f, 0, SEEK_SET) < 0) {
+        goto error;
+    }
+
+    size_t n = fread(buffer, 1, m, f);
+    assert(n == (size_t) m);
+
+    if (ferror(f)) {
+        goto error;
+    }
+
+    buffer[n] = '\0';
+
+    fclose(f);
+
+    return buffer;
+
+error:
+    if (f) {
+        fclose(f);
+    }
+
+    if (buffer) {
+        free(buffer);
+    }
+
+    return NULL;
+}
+

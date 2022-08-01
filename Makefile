@@ -1,6 +1,8 @@
 CC=cc
-CFLAGS=-Wall -Wextra
-BIN=bycicle errors.log
+CFLAGS=-Wall -Wextra -ggdb
+ALL=bycicle
+
+.PHONY: clean
 
 all: bycicle
 
@@ -8,6 +10,5 @@ bycicle: bycicle.c
 	$(CC) $(CFLAGS) -o bycicle bycicle.c
 
 clean:
-	for file in $(BIN); do \
-	if [ -e $$file ]; then rm $$file; fi;\
-	done
+	rm bycicle
+
