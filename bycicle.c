@@ -22,6 +22,7 @@
 #define NANOSECS_TO_SLOWDOWN 500000000
 #define MAX_LINES_IN_TEXT 100
 #define MAX_TEXTS 100
+//#define DEBUG_MODE
 
 struct termios orig_termios;
 
@@ -72,6 +73,11 @@ void move_down(int lines) {
     printf("\033[%dB\r", lines);
 }
 
+/* move cursor LINES to the right */
+void move_right(int lines) {
+    printf("\033[%dC", lines);
+}
+
 //used for atexit to return cursor where it is supposed to be after program finishes
 void return_cursor(void) {
     printf("\033["NUM_LINES_TO_RETURN"B\r");
@@ -89,8 +95,8 @@ void print_first_n(char *str, int n) {
 }
 
 /*------------------string assets------------------*/
-char *bycicle1 = "  __o ";
-char *bycicle2 = " -\\<,";
+char *bycicle1 = "__o ";
+char *bycicle2 = "-\\<,";
 char *bycicle3 = "O / O ";
 
 #define TREE_LENGTH 27
@@ -142,7 +148,6 @@ double slowness_to_speed(double slowness) {
     return  40 / slowness - 35;
 }
 
-//TODO: better functions for increasing and decreasing slowness
 void inc_slowness(double *slowness) {
         *slowness *= 1.03;
     if (*slowness > SLOWNESS_MAX)
@@ -334,11 +339,14 @@ int main(int argc, char **argv) {
             print_background();
             move_up(3);
             //TODO: don't overwrite blanks and display background behind the cyclist
+            int player_pos = 6;
+            move_right(2 + player_pos);
             printf("%s\n\r", bycicle1);
+            move_right(1 + player_pos);
             printf("%s\n\r", bycicle2);
+            move_right(player_pos);
             printf("%s\n\r", bycicle3);
             //debug line
-//#define DEBUG_MODE
 #ifdef DEBUG_MODE
             printf("[%s]\n\r%s|\r\n----- Speed: %.1lf km/h --- next_word: %s --last word typed: %s----DEBUG----\n\r", goal_string, input_str, slowness_to_speed(slowness), next_word, last_word);
             printf("[input_str: %s]----\n\r", input_str);
